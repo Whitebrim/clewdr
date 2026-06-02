@@ -19,14 +19,23 @@ It keeps resource usage low, serves OpenAI-style endpoints, and ships with a Lep
 
 ## Supported Endpoints
 
-| Service | Endpoint |
-|---------|----------|
-| Claude.ai | `http://127.0.0.1:8484/v1/messages` |
-| Claude.ai OpenAI compatible | `http://127.0.0.1:8484/v1/chat/completions` |
-| Claude Code | `http://127.0.0.1:8484/code/v1/messages` |
-| Claude Code OpenAI compatible | `http://127.0.0.1:8484/code/v1/chat/completions` |
+Endpoints are split by API dialect: **Anthropic-native** under `/anthropic/`
+and **OpenAI-compatible** under `/openai/`.
 
-Streaming responses work on every endpoint.
+| Service | Dialect | Endpoint |
+|---------|---------|----------|
+| Claude.ai | Anthropic-native | `http://127.0.0.1:8484/anthropic/v1/messages` |
+| Claude.ai | OpenAI-compatible | `http://127.0.0.1:8484/openai/v1/chat/completions` |
+| Claude Code | Anthropic-native | `http://127.0.0.1:8484/anthropic/code/v1/messages` |
+| Claude Code | OpenAI-compatible | `http://127.0.0.1:8484/openai/code/v1/chat/completions` |
+| Model list | Anthropic-native | `http://127.0.0.1:8484/anthropic/v1/models` |
+| Model list | OpenAI-compatible | `http://127.0.0.1:8484/openai/v1/models` |
+
+Streaming responses work on every endpoint. Authenticate with either
+`Authorization: Bearer <password>` or `x-api-key: <password>`.
+
+The advertised model list lives in `clewdr.toml` (`models = [...]`) and can be
+edited freely; it powers both `/models` endpoints.
 
 ## Quick Start
 
@@ -65,9 +74,9 @@ SillyTavern:
 
 ```json
 {
-  "api_url": "http://127.0.0.1:8484/v1/chat/completions",
+  "api_url": "http://127.0.0.1:8484/openai/v1/chat/completions",
   "api_key": "password-from-console",
-  "model": "claude-3-sonnet-20240229"
+  "model": "claude-sonnet-4-6"
 }
 ```
 
@@ -79,8 +88,8 @@ Continue (VS Code):
     {
       "title": "Claude via ClewdR",
       "provider": "openai",
-      "model": "claude-3-sonnet-20240229",
-      "apiBase": "http://127.0.0.1:8484/v1/",
+      "model": "claude-sonnet-4-6",
+      "apiBase": "http://127.0.0.1:8484/openai/v1/",
       "apiKey": "password-from-console"
     }
   ]
@@ -91,7 +100,7 @@ Cursor:
 
 ```json
 {
-  "openaiApiBase": "http://127.0.0.1:8484/v1/",
+  "openaiApiBase": "http://127.0.0.1:8484/openai/v1/",
   "openaiApiKey": "password-from-console"
 }
 ```

@@ -151,14 +151,15 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Host $host;
 
-    # API endpoints
-    location /v1/ {
+    # API endpoints (OpenAI-compatible dialect)
+    location /openai/ {
         limit_req zone=api burst=20 nodelay;
         proxy_pass http://127.0.0.1:8484;
         proxy_buffering off;
     }
 
-    location /code/v1/ {
+    # API endpoints (Anthropic-native dialect)
+    location /anthropic/ {
         limit_req zone=api burst=20 nodelay;
         proxy_pass http://127.0.0.1:8484;
         proxy_buffering off;
@@ -181,8 +182,8 @@ server {
 # Check security headers
 curl -I https://clewdr.example.com
 
-# Verify API works
-curl https://clewdr.example.com/v1/models \
+# Verify API works (OpenAI dialect; or /anthropic/v1/models for Anthropic)
+curl https://clewdr.example.com/openai/v1/models \
   -H "Authorization: Bearer YOUR_PASSWORD"
 
 # Verify brute-force protection
