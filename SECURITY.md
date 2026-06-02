@@ -69,7 +69,24 @@ admin_ip_allowlist = ["10.0.0.0/8", "192.168.1.0/24"]
 api_ip_allowlist = []
 ```
 
-When behind a reverse proxy, ClewdR reads `X-Real-IP` and `X-Forwarded-For` headers. Configure your proxy to set these correctly and restrict direct access to ClewdR's port.
+### Client IP behind a reverse proxy
+
+`X-Real-IP` / `X-Forwarded-For` are attacker-controlled, so ClewdR only trusts
+them when the request's TCP peer is itself a configured trusted proxy. Otherwise
+the real TCP source address is used and the headers are ignored — a client
+hitting ClewdR directly cannot spoof its IP to bypass the allowlist or
+brute-force throttle.
+
+```toml
+# Networks whose forwarding headers are believed.
+# Default: loopback + RFC1918 + ULA. Add your proxy's address if it sits
+# outside these ranges (e.g. a Docker bridge subnet).
+trusted_proxies = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+```
+
+Configure your proxy to set `X-Real-IP $remote_addr` (and/or
+`X-Forwarded-For`), restrict direct access to ClewdR's port, and verify
+`audit.*.jsonl` shows real client IPs rather than the proxy address.
 
 ### Security Headers
 
@@ -215,8 +232,15 @@ admin_password = "$argon2id$..."
 admin_ip_allowlist = []
 api_ip_allowlist = []
 
+# Reverse proxies whose forwarding headers are trusted
+# (default: loopback + RFC1918 + ULA)
+trusted_proxies = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+
 # Encrypted cookie storage (managed automatically)
 # cookie_array_enc = "base64..."
+
+# On-disk schema version (managed automatically)
+config_version = 1
 ```
 
 Environment variables:
@@ -226,3 +250,4 @@ Environment variables:
 | `CLEWDR_DATA_KEY` | 32-byte hex key for cookie encryption |
 | `CLEWDR_PASSWORD` | Override API password |
 | `CLEWDR_ADMIN_PASSWORD` | Override admin password |
+| `CLEWDR_IP` | Bind address (e.g. `0.0.0.0` to listen on all interfaces) |
