@@ -158,6 +158,10 @@ pub enum ClewdrError {
     TimestampError { timestamp: i64 },
     #[snafu(display("Key/Password Invalid"))]
     InvalidAuth,
+    #[snafu(display("Too many failed auth attempts, retry after {} seconds", retry_after_secs))]
+    TooManyAuthAttempts { retry_after_secs: u64 },
+    #[snafu(display("Access denied"))]
+    Forbidden,
     #[snafu(whatever, display("{}: {}", message, source.as_ref().map_or_else(|| "Unknown error".into(), |e| e.to_string())))]
     Whatever {
         message: String,
@@ -206,12 +210,36 @@ impl IntoResponse for ClewdrError {
             ClewdrError::InvalidCookie { .. } => (StatusCode::BAD_REQUEST, json!(self.to_string())),
             ClewdrError::PathNotFound { .. } => (StatusCode::NOT_FOUND, json!(self.to_string())),
             ClewdrError::InvalidAuth => (StatusCode::UNAUTHORIZED, json!(self.to_string())),
+            ClewdrError::Forbidden => (StatusCode::FORBIDDEN, json!("Access denied")),
+            ClewdrError::TooManyAuthAttempts { retry_after_secs } => {
+                let body = ClaudeErrorBody {
+                    message: json!(format!(
+                        "Too many failed attempts. Retry after {retry_after_secs} seconds"
+                    )),
+                    r#type: "too_many_auth_attempts".to_string(),
+                    code: Some(429),
+                };
+                let mut response =
+                    (StatusCode::TOO_MANY_REQUESTS, Json(ClaudeError { error: body }))
+                        .into_response();
+                if let Ok(val) = http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    response.headers_mut().insert("retry-after", val);
+                }
+                return response;
+            }
             ClewdrError::BadRequest { .. } => (StatusCode::BAD_REQUEST, json!(self.to_string())),
             ClewdrError::InvalidHeaderValue { .. } => {
                 (StatusCode::BAD_REQUEST, json!(self.to_string()))
             }
             ClewdrError::EmptyChoices => (StatusCode::NO_CONTENT, json!(self.to_string())),
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, json!(self.to_string())),
+            _ => {
+                let correlation_id = uuid::Uuid::new_v4().to_string();
+                error!("[{correlation_id}] Internal error: {self}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!(format!("Internal server error (ref: {correlation_id})")),
+                )
+            }
         };
         let err = ClaudeError {
             error: ClaudeErrorBody {

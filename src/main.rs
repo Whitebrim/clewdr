@@ -117,6 +117,11 @@ async fn main() -> Result<(), ClewdrError> {
         }
     }
 
+    // Initialize audit log
+    if !CLEWDR_CONFIG.load().no_fs {
+        clewdr::security::init_audit_log(LOG_DIR.as_path());
+    }
+
     // print info
     println!("Config dir: {}", CONFIG_PATH.display().to_string().blue());
     println!("{}", *CLEWDR_CONFIG);

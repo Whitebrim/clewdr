@@ -2,8 +2,16 @@ use std::{
     collections::HashSet,
     fmt::{Debug, Display},
     net::{IpAddr, SocketAddr},
+    sync::LazyLock,
+    time::Duration,
 };
 
+use ipnet::IpNet;
+
+use argon2::{
+    Algorithm, Argon2, Params, Version,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+};
 use axum::http::{Uri, uri::Scheme};
 use clap::Parser;
 use colored::Colorize;
@@ -12,6 +20,7 @@ use figment::{
     providers::{Env, Format, Toml},
 };
 use http::uri::Authority;
+use moka::sync::Cache;
 use passwords::PasswordGenerator;
 use serde::{Deserialize, Serialize};
 use tokio::spawn;
@@ -30,11 +39,57 @@ use crate::{
     utils::enabled,
 };
 
-/// Generates a random password for authentication
-/// Creates a secure 64-character password with mixed character types
-///
-/// # Returns
-/// A random password string
+pub const HASHED_PLACEHOLDER: &str = "[hashed]";
+
+fn is_argon2_hash(s: &str) -> bool {
+    s.starts_with("$argon2")
+}
+
+fn hash_password_argon2(password: &str) -> String {
+    let salt = SaltString::generate(&mut OsRng);
+    let params = Params::new(65536, 3, 4, None).expect("valid argon2 params");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("argon2 hash")
+        .to_string()
+}
+
+fn verify_password_argon2(password: &str, hash: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
+}
+
+static AUTH_CACHE: LazyLock<Cache<String, String>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(100)
+        .time_to_live(Duration::from_secs(3600))
+        .build()
+});
+
+fn cached_verify(token: &str, current_hash: &str) -> bool {
+    let cache_key = token.to_string();
+    if let Some(cached_hash) = AUTH_CACHE.get(&cache_key) {
+        if cached_hash.as_str() == current_hash {
+            return true;
+        }
+    }
+    if verify_password_argon2(token, current_hash) {
+        AUTH_CACHE.insert(cache_key, current_hash.to_string());
+        true
+    } else {
+        false
+    }
+}
+
+pub fn invalidate_auth_cache() {
+    AUTH_CACHE.invalidate_all();
+}
+
 fn generate_password() -> String {
     let pg = PasswordGenerator {
         length: 64,
@@ -59,6 +114,10 @@ pub struct ClewdrConfig {
     pub cookie_array: HashSet<CookieStatus>,
     #[serde(default)]
     pub wasted_cookie: HashSet<UselessCookie>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookie_array_enc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasted_cookie_enc: Option<String>,
 
     // Server settings, cannot hot reload
     #[serde(default = "default_ip")]
@@ -128,6 +187,12 @@ pub struct ClewdrConfig {
     #[serde(default)]
     pub custom_system: Option<String>,
 
+    // Security settings
+    #[serde(default)]
+    pub admin_ip_allowlist: Vec<IpNet>,
+    #[serde(default)]
+    pub api_ip_allowlist: Vec<IpNet>,
+
     // Skip field, can hot reload
     #[serde(skip)]
     pub wreq_proxy: Option<Proxy>,
@@ -141,6 +206,8 @@ impl Default for ClewdrConfig {
             auto_update: false,
             cookie_array: HashSet::new(),
             wasted_cookie: HashSet::new(),
+            cookie_array_enc: None,
+            wasted_cookie_enc: None,
             password: String::new(),
             admin_password: String::new(),
             proxy: None,
@@ -166,6 +233,8 @@ impl Default for ClewdrConfig {
             custom_system: None,
             no_fs: false,
             log_to_file: false,
+            admin_ip_allowlist: Vec::new(),
+            api_ip_allowlist: Vec::new(),
         }
     }
 }
@@ -187,6 +256,16 @@ impl Display for ClewdrConfig {
             .path_and_query("")
             .build()
             .map_err(|_| std::fmt::Error)?;
+        let pw_display = if is_argon2_hash(&self.password) {
+            "[hashed]".dimmed()
+        } else {
+            self.password.as_str().yellow()
+        };
+        let apw_display = if is_argon2_hash(&self.admin_password) {
+            "[hashed]".dimmed()
+        } else {
+            self.admin_password.as_str().yellow()
+        };
         write!(
             f,
             "Claude(Claude and OpenAI format) Endpoint: {}\n\
@@ -196,9 +275,9 @@ impl Display for ClewdrConfig {
             Web Admin Password: {}\n",
             api_url.to_string().green().underline(),
             (web_url.to_string() + "code/v1").green().underline(),
-            self.password.yellow(),
+            pw_display,
             web_url.to_string().green().underline(),
-            self.admin_password.yellow(),
+            apw_display,
         )?;
         if let Some(ref proxy) = self.proxy {
             writeln!(f, "Proxy: {}", proxy.to_string().blue())?;
@@ -236,8 +315,16 @@ impl From<&ClewdrConfig> for clewdr_types::ConfigApi {
             port: c.port,
             check_update: c.check_update,
             auto_update: c.auto_update,
-            password: c.password.clone(),
-            admin_password: c.admin_password.clone(),
+            password: if is_argon2_hash(&c.password) {
+                HASHED_PLACEHOLDER.to_string()
+            } else {
+                c.password.clone()
+            },
+            admin_password: if is_argon2_hash(&c.admin_password) {
+                HASHED_PLACEHOLDER.to_string()
+            } else {
+                c.admin_password.clone()
+            },
             proxy: c.proxy.clone(),
             rproxy: c.rproxy.as_ref().map(|u| u.to_string()),
             max_retries: c.max_retries,
@@ -296,11 +383,19 @@ impl From<clewdr_types::ConfigApi> for ClewdrConfig {
 
 impl ClewdrConfig {
     pub fn user_auth(&self, key: &str) -> bool {
-        key == self.password
+        if is_argon2_hash(&self.password) {
+            cached_verify(key, &self.password)
+        } else {
+            key == self.password
+        }
     }
 
     pub fn admin_auth(&self, key: &str) -> bool {
-        key == self.admin_password
+        if is_argon2_hash(&self.admin_password) {
+            cached_verify(key, &self.admin_password)
+        } else {
+            key == self.admin_password
+        }
     }
 
     pub fn cc_client_id(&self) -> String {
@@ -326,6 +421,47 @@ impl ClewdrConfig {
                 error!("Failed to load config: {}", e);
             })
             .unwrap_or_default();
+
+        // Decrypt encrypted cookies
+        let key_path = CONFIG_PATH.with_extension("key");
+        let has_encrypted = config.cookie_array_enc.is_some() || config.wasted_cookie_enc.is_some();
+        if has_encrypted {
+            match crate::security::get_data_key(&key_path, false) {
+                Ok(key) => {
+                    if let Some(ref enc) = config.cookie_array_enc {
+                        match crate::security::decrypt_data(&key, enc) {
+                            Some(plain) => match serde_json::from_slice::<HashSet<CookieStatus>>(
+                                &plain,
+                            ) {
+                                Ok(cookies) => config.cookie_array.extend(cookies),
+                                Err(e) => error!("Failed to deserialize decrypted cookies: {e}"),
+                            },
+                            None => error!("Failed to decrypt cookie_array_enc"),
+                        }
+                    }
+                    if let Some(ref enc) = config.wasted_cookie_enc {
+                        match crate::security::decrypt_data(&key, enc) {
+                            Some(plain) => {
+                                match serde_json::from_slice::<HashSet<UselessCookie>>(&plain) {
+                                    Ok(cookies) => config.wasted_cookie.extend(cookies),
+                                    Err(e) => {
+                                        error!("Failed to deserialize decrypted wasted cookies: {e}")
+                                    }
+                                }
+                            }
+                            None => error!("Failed to decrypt wasted_cookie_enc"),
+                        }
+                    }
+                    config.cookie_array_enc = None;
+                    config.wasted_cookie_enc = None;
+                }
+                Err(msg) => {
+                    eprintln!("FATAL: {msg}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         if let Some(ref f) = Args::try_parse().ok().and_then(|a| a.file) {
             // load cookies from file
             if f.exists() {
@@ -396,8 +532,30 @@ impl ClewdrConfig {
         {
             tokio::fs::create_dir_all(parent).await?;
         }
+
+        let mut save_config = self.clone();
+
+        // Encrypt cookies before saving
+        let key_path = CONFIG_PATH.with_extension("key");
+        if let Ok(key) = crate::security::get_data_key(&key_path, true) {
+            if !save_config.cookie_array.is_empty() {
+                if let Ok(json) = serde_json::to_vec(&save_config.cookie_array) {
+                    save_config.cookie_array_enc =
+                        Some(crate::security::encrypt_data(&key, &json));
+                }
+                save_config.cookie_array = HashSet::new();
+            }
+            if !save_config.wasted_cookie.is_empty() {
+                if let Ok(json) = serde_json::to_vec(&save_config.wasted_cookie) {
+                    save_config.wasted_cookie_enc =
+                        Some(crate::security::encrypt_data(&key, &json));
+                }
+                save_config.wasted_cookie = HashSet::new();
+            }
+        }
+
         let path = CONFIG_PATH.as_path();
-        let data = toml::ser::to_string_pretty(self)?;
+        let data = toml::ser::to_string_pretty(&save_config)?;
         tokio::fs::write(path, data).await?;
         #[cfg(unix)]
         {
@@ -411,11 +569,20 @@ impl ClewdrConfig {
     /// Validate the configuration
     pub fn validate(mut self) -> Self {
         if self.password.trim().is_empty() {
-            self.password = generate_password();
+            let plain = generate_password();
+            println!("{}: {}", "API Password".green(), plain.yellow());
+            self.password = hash_password_argon2(&plain);
+        } else if !is_argon2_hash(&self.password) {
+            self.password = hash_password_argon2(&self.password);
         }
         if self.admin_password.trim().is_empty() {
-            self.admin_password = generate_password();
+            let plain = generate_password();
+            println!("{}: {}", "Admin Password".green(), plain.yellow());
+            self.admin_password = hash_password_argon2(&plain);
+        } else if !is_argon2_hash(&self.admin_password) {
+            self.admin_password = hash_password_argon2(&self.admin_password);
         }
+        invalidate_auth_cache();
         self.cookie_array = self.cookie_array.into_iter().map(|x| x.reset()).collect();
         self.wreq_proxy = self.proxy.to_owned().and_then(|p| {
             Proxy::all(p)
@@ -426,5 +593,90 @@ impl ClewdrConfig {
                 .ok()
         });
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_and_verify() {
+        let password = "test_password_12345";
+        let hash = hash_password_argon2(password);
+        assert!(is_argon2_hash(&hash));
+        assert!(verify_password_argon2(password, &hash));
+        assert!(!verify_password_argon2("wrong_password", &hash));
+    }
+
+    #[test]
+    fn test_is_argon2_hash() {
+        assert!(is_argon2_hash("$argon2id$v=19$m=65536,t=3,p=4$salt$hash"));
+        assert!(!is_argon2_hash("plaintext_password"));
+        assert!(!is_argon2_hash(""));
+        assert!(!is_argon2_hash("[hashed]"));
+    }
+
+    #[test]
+    fn test_cached_verify() {
+        let password = "cached_test_pw";
+        let hash = hash_password_argon2(password);
+        assert!(cached_verify(password, &hash));
+        // second call should hit cache
+        assert!(cached_verify(password, &hash));
+        assert!(!cached_verify("wrong", &hash));
+    }
+
+    #[test]
+    fn test_validate_hashes_plaintext() {
+        let mut config = ClewdrConfig::default();
+        config.password = "my_plain_password".to_string();
+        config.admin_password = "my_admin_password".to_string();
+        let validated = config.validate();
+        assert!(is_argon2_hash(&validated.password));
+        assert!(is_argon2_hash(&validated.admin_password));
+        assert!(validated.user_auth("my_plain_password"));
+        assert!(validated.admin_auth("my_admin_password"));
+    }
+
+    #[test]
+    fn test_validate_preserves_existing_hash() {
+        let hash = hash_password_argon2("original");
+        let mut config = ClewdrConfig::default();
+        config.password = hash.clone();
+        config.admin_password = hash.clone();
+        let validated = config.validate();
+        assert_eq!(validated.password, hash);
+        assert_eq!(validated.admin_password, hash);
+    }
+
+    #[test]
+    fn test_validate_generates_when_empty() {
+        let config = ClewdrConfig::default();
+        let validated = config.validate();
+        assert!(is_argon2_hash(&validated.password));
+        assert!(is_argon2_hash(&validated.admin_password));
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_password_change() {
+        let password = "old_password";
+        let old_hash = hash_password_argon2(password);
+        assert!(cached_verify(password, &old_hash));
+
+        let new_hash = hash_password_argon2("new_password");
+        // old token should fail against new hash (cache entry hash won't match)
+        assert!(!cached_verify(password, &new_hash));
+    }
+
+    #[test]
+    fn test_hashed_placeholder_in_config_api() {
+        let hash = hash_password_argon2("secret");
+        let mut config = ClewdrConfig::default();
+        config.password = hash;
+        config.admin_password = hash_password_argon2("admin_secret");
+        let api: clewdr_types::ConfigApi = (&config).into();
+        assert_eq!(api.password, HASHED_PLACEHOLDER);
+        assert_eq!(api.admin_password, HASHED_PLACEHOLDER);
     }
 }
