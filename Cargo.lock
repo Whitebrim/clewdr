@@ -663,6 +663,7 @@ dependencies = [
  "colored",
  "console-subscriber",
  "const_format",
+ "dashmap",
  "enable-ansi-support",
  "etcetera",
  "eventsource-stream",

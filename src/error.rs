@@ -158,6 +158,8 @@ pub enum ClewdrError {
     TimestampError { timestamp: i64 },
     #[snafu(display("Key/Password Invalid"))]
     InvalidAuth,
+    #[snafu(display("Too many failed auth attempts, retry after {} seconds", retry_after_secs))]
+    TooManyAuthAttempts { retry_after_secs: u64 },
     #[snafu(whatever, display("{}: {}", message, source.as_ref().map_or_else(|| "Unknown error".into(), |e| e.to_string())))]
     Whatever {
         message: String,
@@ -206,6 +208,22 @@ impl IntoResponse for ClewdrError {
             ClewdrError::InvalidCookie { .. } => (StatusCode::BAD_REQUEST, json!(self.to_string())),
             ClewdrError::PathNotFound { .. } => (StatusCode::NOT_FOUND, json!(self.to_string())),
             ClewdrError::InvalidAuth => (StatusCode::UNAUTHORIZED, json!(self.to_string())),
+            ClewdrError::TooManyAuthAttempts { retry_after_secs } => {
+                let body = ClaudeErrorBody {
+                    message: json!(format!(
+                        "Too many failed attempts. Retry after {retry_after_secs} seconds"
+                    )),
+                    r#type: "too_many_auth_attempts".to_string(),
+                    code: Some(429),
+                };
+                let mut response =
+                    (StatusCode::TOO_MANY_REQUESTS, Json(ClaudeError { error: body }))
+                        .into_response();
+                if let Ok(val) = http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    response.headers_mut().insert("retry-after", val);
+                }
+                return response;
+            }
             ClewdrError::BadRequest { .. } => (StatusCode::BAD_REQUEST, json!(self.to_string())),
             ClewdrError::InvalidHeaderValue { .. } => {
                 (StatusCode::BAD_REQUEST, json!(self.to_string()))

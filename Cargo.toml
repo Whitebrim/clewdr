@@ -24,6 +24,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 clewdr-types = { path = "clewdr-types", features = ["display"] }
 colored = "3"
+dashmap = "6"
 console-subscriber = { version = "0.5", optional = true }
 const_format = { version = "0.2", features = ["fmt"] }
 etcetera = { version = "0", optional = true }

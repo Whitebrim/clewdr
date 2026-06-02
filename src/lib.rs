@@ -13,6 +13,7 @@ pub mod error;
 pub mod middleware;
 pub mod providers;
 pub mod router;
+pub mod security;
 pub mod services;
 pub mod types;
 pub mod utils;
