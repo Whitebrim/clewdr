@@ -56,6 +56,7 @@ impl RouterBuilder {
             .route_admin_endpoints()
             .route_claude_web_oai_endpoints()
             .route_claude_code_oai_endpoints()
+            .route_models_endpoints()
             .setup_static_serving()
             .with_tower_trace()
             .with_security_headers()
@@ -122,7 +123,6 @@ impl RouterBuilder {
     fn route_claude_web_oai_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/v1/chat/completions", post(api_claude_web))
-            .route("/v1/models", get(api_get_models))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -140,7 +140,6 @@ impl RouterBuilder {
     fn route_claude_code_oai_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/code/v1/chat/completions", post(api_claude_code))
-            .route("/code/v1/models", get(api_get_models))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -148,6 +147,22 @@ impl RouterBuilder {
                     .layer(map_response(to_oai)),
             )
             .with_state(self.claude_providers.code());
+        self.inner = self.inner.merge(router);
+        self
+    }
+
+    /// Anthropic-compatible `/v1/models` (and `/code/v1/models`). Uses flexible
+    /// auth so both `x-api-key` (native Anthropic SDK style) and
+    /// `Authorization: Bearer` are accepted.
+    fn route_models_endpoints(mut self) -> Self {
+        let router = Router::new()
+            .route("/v1/models", get(api_get_models))
+            .route("/code/v1/models", get(api_get_models))
+            .layer(
+                ServiceBuilder::new()
+                    .layer(from_extractor::<RequireFlexibleAuth>())
+                    .layer(CompressionLayer::new()),
+            );
         self.inner = self.inner.merge(router);
         self
     }
