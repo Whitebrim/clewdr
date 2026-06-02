@@ -7,14 +7,27 @@ use tracing::warn;
 use crate::{
     config::CLEWDR_CONFIG,
     error::ClewdrError,
-    security::{check_bruteforce, extract_client_ip, record_auth_failure, record_auth_success},
+    security::{
+        check_bruteforce, check_ip_allowlist, extract_client_ip, record_auth_failure,
+        record_auth_success,
+    },
 };
 
-fn enforce_bruteforce(
+fn enforce_security(
     parts: &axum::http::request::Parts,
+    is_admin: bool,
 ) -> Result<Option<IpAddr>, ClewdrError> {
     let ip = extract_client_ip(parts);
     if let Some(ip) = ip {
+        let config = CLEWDR_CONFIG.load();
+        let allowlist = if is_admin {
+            &config.admin_ip_allowlist
+        } else {
+            &config.api_ip_allowlist
+        };
+        if !check_ip_allowlist(ip, allowlist) {
+            return Err(ClewdrError::Forbidden);
+        }
         if let Err(duration) = check_bruteforce(ip) {
             return Err(ClewdrError::TooManyAuthAttempts {
                 retry_after_secs: duration.as_secs().max(1),
@@ -34,7 +47,7 @@ where
         parts: &mut axum::http::request::Parts,
         _: &S,
     ) -> Result<Self, Self::Rejection> {
-        let ip = enforce_bruteforce(parts)?;
+        let ip = enforce_security(parts, true)?;
 
         let AuthBearer(key) = AuthBearer::from_request_parts(parts, &())
             .await
@@ -63,7 +76,7 @@ where
         parts: &mut axum::http::request::Parts,
         _: &S,
     ) -> Result<Self, Self::Rejection> {
-        let ip = enforce_bruteforce(parts)?;
+        let ip = enforce_security(parts, false)?;
 
         let AuthBearer(key) = AuthBearer::from_request_parts(parts, &())
             .await
@@ -92,7 +105,7 @@ where
         parts: &mut axum::http::request::Parts,
         _: &S,
     ) -> Result<Self, Self::Rejection> {
-        let ip = enforce_bruteforce(parts)?;
+        let ip = enforce_security(parts, false)?;
 
         if let Some(key) = parts.headers.get("x-api-key").and_then(|v| v.to_str().ok())
             && CLEWDR_CONFIG.load().user_auth(key)

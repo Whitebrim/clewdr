@@ -6,6 +6,8 @@ use std::{
     time::Duration,
 };
 
+use ipnet::IpNet;
+
 use argon2::{
     Algorithm, Argon2, Params, Version,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
@@ -185,6 +187,12 @@ pub struct ClewdrConfig {
     #[serde(default)]
     pub custom_system: Option<String>,
 
+    // Security settings
+    #[serde(default)]
+    pub admin_ip_allowlist: Vec<IpNet>,
+    #[serde(default)]
+    pub api_ip_allowlist: Vec<IpNet>,
+
     // Skip field, can hot reload
     #[serde(skip)]
     pub wreq_proxy: Option<Proxy>,
@@ -225,6 +233,8 @@ impl Default for ClewdrConfig {
             custom_system: None,
             no_fs: false,
             log_to_file: false,
+            admin_ip_allowlist: Vec::new(),
+            api_ip_allowlist: Vec::new(),
         }
     }
 }

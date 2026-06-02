@@ -160,6 +160,8 @@ pub enum ClewdrError {
     InvalidAuth,
     #[snafu(display("Too many failed auth attempts, retry after {} seconds", retry_after_secs))]
     TooManyAuthAttempts { retry_after_secs: u64 },
+    #[snafu(display("Access denied"))]
+    Forbidden,
     #[snafu(whatever, display("{}: {}", message, source.as_ref().map_or_else(|| "Unknown error".into(), |e| e.to_string())))]
     Whatever {
         message: String,
@@ -208,6 +210,7 @@ impl IntoResponse for ClewdrError {
             ClewdrError::InvalidCookie { .. } => (StatusCode::BAD_REQUEST, json!(self.to_string())),
             ClewdrError::PathNotFound { .. } => (StatusCode::NOT_FOUND, json!(self.to_string())),
             ClewdrError::InvalidAuth => (StatusCode::UNAUTHORIZED, json!(self.to_string())),
+            ClewdrError::Forbidden => (StatusCode::FORBIDDEN, json!("Access denied")),
             ClewdrError::TooManyAuthAttempts { retry_after_secs } => {
                 let body = ClaudeErrorBody {
                     message: json!(format!(
