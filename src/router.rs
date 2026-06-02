@@ -154,6 +154,14 @@ impl RouterBuilder {
 
     /// Sets up static file serving
     fn setup_static_serving(mut self) -> Self {
+        // Serve `/` and `/index.html` via a dedicated handler so we can inject a
+        // per-request CSP nonce into Trunk's inline `<script type="module">`
+        // bootloader. All other static assets fall through to the bundler.
+        self.inner = self
+            .inner
+            .route("/", get(serve_index))
+            .route("/index.html", get(serve_index));
+
         #[cfg(feature = "embed-resource")]
         {
             use include_dir::{Dir, include_dir};
@@ -202,9 +210,14 @@ impl RouterBuilder {
     }
 
     fn with_security_headers(mut self) -> Self {
+        // Fallback CSP for routes that don't set one explicitly (API responses,
+        // non-HTML static assets). The SPA entry point installs its own stricter
+        // policy that swaps in a per-request nonce — see `serve_index`.
         let csp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-                    style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
-                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'";
+                    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
+                    font-src 'self' https://fonts.gstatic.com data:; \
+                    img-src 'self' data:; connect-src 'self'; \
+                    frame-ancestors 'none'; form-action 'self'";
 
         self.inner = self
             .inner
@@ -220,7 +233,7 @@ impl RouterBuilder {
                 http::header::X_FRAME_OPTIONS,
                 HeaderValue::from_static("DENY"),
             ))
-            .layer(SetResponseHeaderLayer::overriding(
+            .layer(SetResponseHeaderLayer::if_not_present(
                 http::header::CONTENT_SECURITY_POLICY,
                 HeaderValue::from_static(csp),
             ))
