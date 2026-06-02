@@ -46,6 +46,24 @@ pub async fn merge_sse(
         .await?)
 }
 
+/// Whether an SSE event from Claude.ai's web `/completion` stream is the
+/// non-standard `message_limit` event (which describes the account's message
+/// quota). It is not part of the Anthropic API, so it must be filtered out
+/// before reaching the client.
+pub(crate) fn is_message_limit_event(event_name: &str, data: &str) -> bool {
+    if event_name.trim() == "message_limit" {
+        return true;
+    }
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|s| s == "message_limit")
+        })
+        .unwrap_or(false)
+}
+
 impl<S> From<S> for Message
 where
     S: Into<String>,
@@ -105,6 +123,11 @@ impl ClaudeWebState {
                 struct Data { completion: String }
                 futures::pin_mut!(stream);
                 while let Some(event) = stream.try_next().await? {
+                    // Claude.ai emits a non-standard `message_limit` event; never
+                    // forward it to the client.
+                    if is_message_limit_event(&event.event, &event.data) {
+                        continue;
+                    }
                     if let Ok(d) = serde_json::from_str::<Data>(&event.data) {
                         acc.push_str(&d.completion);
                     }
@@ -293,4 +316,41 @@ async fn count_code_output_tokens_for_text(
     };
     // do not set count_tokens_allowed flag here to avoid races; handled by try_code_count_tokens
     bearer_count_tokens(&code, &access, &body).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_message_limit_event;
+
+    #[test]
+    fn detects_message_limit_by_event_name() {
+        assert!(is_message_limit_event(
+            "message_limit",
+            r#"{"type":"message_limit","message_limit":{"type":"within_limit"}}"#
+        ));
+    }
+
+    #[test]
+    fn detects_message_limit_by_data_type() {
+        // event name absent/empty, only the data carries the type
+        assert!(is_message_limit_event(
+            "",
+            r#"{"type":"message_limit","message_limit":{"type":"approaching_limit"}}"#
+        ));
+    }
+
+    #[test]
+    fn passes_through_standard_events() {
+        assert!(!is_message_limit_event(
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#
+        ));
+        assert!(!is_message_limit_event(
+            "message_stop",
+            r#"{"type":"message_stop"}"#
+        ));
+        assert!(!is_message_limit_event("completion", r#"{"completion":"hello"}"#));
+        // non-JSON data must not be misclassified
+        assert!(!is_message_limit_event("ping", "not json"));
+    }
 }
