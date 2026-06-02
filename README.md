@@ -34,8 +34,11 @@ and **OpenAI-compatible** under `/openai/`.
 Streaming responses work on every endpoint. Authenticate with either
 `Authorization: Bearer <password>` or `x-api-key: <password>`.
 
-The advertised model list lives in `clewdr.toml` (`models = [...]`) and can be
-edited freely; it powers both `/models` endpoints.
+The advertised model list lives in `clewdr.toml` as `[[models]]` entries with
+the full Anthropic model schema (id, display name, dates, token limits, and a
+`capabilities` tree). It can be edited freely and powers both `/models`
+endpoints — served verbatim by `/anthropic/v1/models` and projected to the
+OpenAI shape by `/openai/v1/models`.
 
 ## Quick Start
 

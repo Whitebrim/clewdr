@@ -2,11 +2,13 @@
 mod clewdr_config;
 mod constants;
 mod cookie;
+mod model_info;
 mod reason;
 mod token;
 
 pub use clewdr_config::*;
 pub use constants::*;
 pub use cookie::*;
+pub use model_info::*;
 pub use reason::*;
 pub use token::*;

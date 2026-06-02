@@ -32,8 +32,9 @@ use super::{CONFIG_PATH, ENDPOINT_URL};
 use crate::{
     Args,
     config::{
-        CC_CLIENT_ID, CookieStatus, UselessCookie, default_check_update, default_ip,
-        default_max_retries, default_port, default_skip_cool_down, default_use_real_roles,
+        CC_CLIENT_ID, CookieStatus, ModelInfo, UselessCookie, default_check_update,
+        default_ip, default_max_retries, default_models, default_port, default_skip_cool_down,
+        default_use_real_roles, deserialize_models,
     },
     error::ClewdrError,
     utils::enabled,
@@ -110,55 +111,6 @@ fn generate_password() -> String {
 
     println!("{}", "Generating random password......".green());
     pg.generate_one().unwrap()
-}
-
-/// Default list of model identifiers advertised by `/openai/v1/models` and
-/// `/anthropic/v1/models`.
-///
-/// Besides the real Anthropic model ids this includes ClewdR's synthetic
-/// `-thinking` and `-1M` variants, which the request layer interprets to
-/// toggle extended thinking and the 1M-token context window respectively.
-/// The list lives in `clewdr.toml` (`models = [...]`) and can be edited freely.
-pub fn default_models() -> Vec<String> {
-    [
-        "claude-opus-4-8",
-        "claude-opus-4-8-thinking",
-        "claude-opus-4-8-1M",
-        "claude-opus-4-8-1M-thinking",
-        "claude-opus-4-7",
-        "claude-opus-4-7-thinking",
-        "claude-opus-4-7-1M",
-        "claude-opus-4-7-1M-thinking",
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-6-thinking",
-        "claude-sonnet-4-6-1M",
-        "claude-sonnet-4-6-1M-thinking",
-        "claude-haiku-4-5-20251001",
-        "claude-haiku-4-5-20251001-thinking",
-        "claude-opus-4-6",
-        "claude-opus-4-6-thinking",
-        "claude-opus-4-6-1M",
-        "claude-opus-4-6-1M-thinking",
-        "claude-opus-4-5-20251101",
-        "claude-opus-4-5-20251101-thinking",
-        "claude-opus-4-5",
-        "claude-opus-4-5-thinking",
-        "claude-sonnet-4-5-20250929",
-        "claude-sonnet-4-5-20250929-thinking",
-        "claude-sonnet-4-5-20250929-1M",
-        "claude-sonnet-4-5-20250929-1M-thinking",
-        "claude-opus-4-1-20250805",
-        "claude-opus-4-1-20250805-thinking",
-        "claude-sonnet-4-20250514",
-        "claude-sonnet-4-20250514-thinking",
-        "claude-sonnet-4-20250514-1M",
-        "claude-sonnet-4-20250514-1M-thinking",
-        "claude-opus-4-20250514",
-        "claude-opus-4-20250514-thinking",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
 }
 
 /// Current on-disk config schema version. Bumped when a breaking layout change
@@ -277,13 +229,16 @@ pub struct ClewdrConfig {
     #[serde(default = "default_trusted_proxies")]
     pub trusted_proxies: Vec<IpNet>,
 
-    // Models advertised by the model-list endpoints, can hot reload
-    #[serde(default = "default_models")]
-    pub models: Vec<String>,
-
     // On-disk schema version, used for future config migrations
     #[serde(default = "default_config_version")]
     pub config_version: u32,
+
+    // Models advertised by the model-list endpoints, can hot reload. Accepts
+    // both the rich `[[models]]` table form and the legacy `models = ["id"]`
+    // string form. Serializes as an array of tables, so it MUST be the last
+    // serialized field (TOML forbids a scalar key after a table within a table).
+    #[serde(default = "default_models", deserialize_with = "deserialize_models")]
+    pub models: Vec<ModelInfo>,
 
     // Skip field, can hot reload
     #[serde(skip)]
