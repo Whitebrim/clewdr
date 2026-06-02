@@ -1,11 +1,16 @@
 use std::{
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     sync::LazyLock,
     time::{Duration, Instant},
 };
 
 use axum::extract::ConnectInfo;
 use dashmap::DashMap;
+use ipnet::IpNet;
+
+use crate::config::CLEWDR_CONFIG;
+
+use super::ip_in_nets;
 
 #[derive(Clone)]
 struct AttemptState {
@@ -58,28 +63,62 @@ pub fn record_auth_success(ip: IpAddr) {
     BRUTEFORCE_STATE.remove(&ip);
 }
 
+/// Determine the real client IP for a request.
+///
+/// Forwarding headers (`X-Real-IP` / `X-Forwarded-For`) are attacker-controlled
+/// and only trusted when the request's TCP peer is a configured trusted proxy
+/// (see [`crate::config::ClewdrConfig::trusted_proxies`]). A direct connection
+/// from an untrusted peer uses the TCP source address and ignores the headers,
+/// so a client hitting the server directly cannot spoof its IP to dodge the
+/// brute-force throttle or the IP allowlist (Bug C).
 pub fn extract_client_ip(parts: &axum::http::request::Parts) -> Option<IpAddr> {
+    let peer = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let cfg = CLEWDR_CONFIG.load();
+    let trusted = &cfg.trusted_proxies;
+
+    match peer {
+        // Behind a trusted proxy: believe the forwarding headers, falling back
+        // to the proxy's own address if they are absent/unparseable.
+        Some(peer_ip) if ip_in_nets(peer_ip, trusted) => {
+            client_ip_from_headers(parts, trusted).or(Some(peer_ip))
+        }
+        // Direct, untrusted connection: trust only the real TCP source.
+        Some(peer_ip) => Some(peer_ip),
+        // No ConnectInfo available (e.g. unit tests): best-effort headers.
+        None => client_ip_from_headers(parts, trusted),
+    }
+}
+
+/// Extract a client IP from forwarding headers. Prefers `X-Real-IP` (set by the
+/// proxy to its immediate client); otherwise takes the right-most address in
+/// `X-Forwarded-For` that is not itself a trusted proxy (the real client when
+/// the chain is `client, proxy1, proxy2, ...`).
+fn client_ip_from_headers(parts: &axum::http::request::Parts, trusted: &[IpNet]) -> Option<IpAddr> {
     if let Some(ip) = parts
         .headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
     {
         return Some(ip);
     }
-    if let Some(ip) = parts
+    let xff = parts
         .headers
         .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse().ok())
-    {
-        return Some(ip);
-    }
-    parts
-        .extensions
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip())
+        .and_then(|v| v.to_str().ok())?;
+    let chain: Vec<IpAddr> = xff
+        .split(',')
+        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+        .collect();
+    chain
+        .iter()
+        .rev()
+        .find(|ip| !ip_in_nets(**ip, trusted))
+        .copied()
+        .or_else(|| chain.first().copied())
 }
 
 #[cfg(test)]
@@ -142,5 +181,70 @@ mod tests {
         assert_eq!(lockout_duration(10).unwrap().as_secs(), 3600);
         assert_eq!(lockout_duration(20).unwrap().as_secs(), 86400);
         assert!(lockout_duration(50).unwrap().as_secs() > 86400);
+    }
+
+    fn parts_with(headers: &[(&str, &str)]) -> axum::http::request::Parts {
+        let mut b = axum::http::Request::builder();
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        b.body(()).unwrap().into_parts().0
+    }
+
+    fn trusted() -> Vec<IpNet> {
+        vec![
+            "127.0.0.0/8".parse().unwrap(),
+            "10.0.0.0/8".parse().unwrap(),
+        ]
+    }
+
+    #[test]
+    fn header_x_real_ip_preferred() {
+        let parts = parts_with(&[("x-real-ip", "1.2.3.4"), ("x-forwarded-for", "9.9.9.9")]);
+        assert_eq!(
+            client_ip_from_headers(&parts, &trusted()),
+            Some("1.2.3.4".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn header_xff_rightmost_untrusted() {
+        // chain: real client, then a trusted proxy hop — the proxy must be skipped
+        let parts = parts_with(&[("x-forwarded-for", "1.2.3.4, 10.0.0.5")]);
+        assert_eq!(
+            client_ip_from_headers(&parts, &trusted()),
+            Some("1.2.3.4".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn header_xff_two_untrusted_takes_rightmost() {
+        let parts = parts_with(&[("x-forwarded-for", "1.2.3.4, 5.6.7.8")]);
+        assert_eq!(
+            client_ip_from_headers(&parts, &trusted()),
+            Some("5.6.7.8".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn header_xff_all_trusted_falls_back_to_leftmost() {
+        let parts = parts_with(&[("x-forwarded-for", "10.0.0.1, 127.0.0.1")]);
+        assert_eq!(
+            client_ip_from_headers(&parts, &trusted()),
+            Some("10.0.0.1".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn header_none_without_forwarding_headers() {
+        let parts = parts_with(&[]);
+        assert_eq!(client_ip_from_headers(&parts, &trusted()), None);
+    }
+
+    #[test]
+    fn ip_in_nets_empty_matches_nothing() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(!ip_in_nets(ip, &[]));
+        assert!(ip_in_nets(ip, &["1.2.3.0/24".parse().unwrap()]));
     }
 }

@@ -2,11 +2,14 @@ use std::net::IpAddr;
 
 use ipnet::IpNet;
 
+/// Whether `ip` falls inside any of `nets`. An empty list matches nothing.
+pub fn ip_in_nets(ip: IpAddr, nets: &[IpNet]) -> bool {
+    nets.iter().any(|net| net.contains(&ip))
+}
+
+/// Allowlist check. An empty allowlist allows all (feature disabled).
 pub fn check_ip_allowlist(ip: IpAddr, allowlist: &[IpNet]) -> bool {
-    if allowlist.is_empty() {
-        return true;
-    }
-    allowlist.iter().any(|net| net.contains(&ip))
+    allowlist.is_empty() || ip_in_nets(ip, allowlist)
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::{io::IsTerminal, net::SocketAddr};
 
 use clewdr::{
     self, FIG, IS_DEBUG,
@@ -135,11 +135,16 @@ async fn main() -> Result<(), ClewdrError> {
         .with_default_setup()
         .build();
     // serve the application
-    Ok(axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl-C handler");
-        })
-        .await?)
+    // `into_make_service_with_connect_info` exposes the TCP peer address as
+    // `ConnectInfo<SocketAddr>`, which the client-IP logic needs to tell a
+    // trusted reverse proxy apart from a direct connection (Bug C).
+    Ok(
+        axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(async {
+                tokio::signal::ctrl_c()
+                    .await
+                    .expect("Failed to install Ctrl-C handler");
+            })
+            .await?,
+    )
 }
