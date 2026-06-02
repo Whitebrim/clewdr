@@ -229,7 +229,14 @@ impl IntoResponse for ClewdrError {
                 (StatusCode::BAD_REQUEST, json!(self.to_string()))
             }
             ClewdrError::EmptyChoices => (StatusCode::NO_CONTENT, json!(self.to_string())),
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, json!(self.to_string())),
+            _ => {
+                let correlation_id = uuid::Uuid::new_v4().to_string();
+                error!("[{correlation_id}] Internal error: {self}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!(format!("Internal server error (ref: {correlation_id})")),
+                )
+            }
         };
         let err = ClaudeError {
             error: ClaudeErrorBody {

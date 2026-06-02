@@ -5,8 +5,13 @@ use axum::{
     middleware::{from_extractor, map_response},
     routing::{delete, get, post},
 };
+use http::header::HeaderValue;
 use tower::ServiceBuilder;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::CorsLayer,
+    set_header::SetResponseHeaderLayer,
+};
 
 use crate::{
     api::*,
@@ -53,6 +58,7 @@ impl RouterBuilder {
             .route_claude_code_oai_endpoints()
             .setup_static_serving()
             .with_tower_trace()
+            .with_security_headers()
             .with_cors()
     }
 
@@ -192,6 +198,46 @@ impl RouterBuilder {
         let layer = TraceLayer::new_for_http();
 
         self.inner = self.inner.layer(layer);
+        self
+    }
+
+    fn with_security_headers(mut self) -> Self {
+        let csp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+                    style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'";
+
+        self.inner = self
+            .inner
+            .layer(SetResponseHeaderLayer::overriding(
+                http::header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                http::header::REFERRER_POLICY,
+                HeaderValue::from_static("same-origin"),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                http::header::X_FRAME_OPTIONS,
+                HeaderValue::from_static("DENY"),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                http::header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(csp),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                http::header::HeaderName::from_static("permissions-policy"),
+                HeaderValue::from_static(
+                    "camera=(), microphone=(), geolocation=(), payment=()",
+                ),
+            ));
+
+        if !*crate::IS_DEV {
+            self.inner = self.inner.layer(SetResponseHeaderLayer::overriding(
+                http::header::STRICT_TRANSPORT_SECURITY,
+                HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+            ));
+        }
+
         self
     }
 
