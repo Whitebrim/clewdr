@@ -4,7 +4,7 @@ use clewdr_types::ConfigApi;
 use serde_json::json;
 
 use super::error::ApiError;
-use crate::config::{CLEWDR_CONFIG, ClewdrConfig};
+use crate::config::{CLEWDR_CONFIG, ClewdrConfig, HASHED_PLACEHOLDER};
 
 pub async fn api_get_config(AuthBearer(t): AuthBearer) -> Result<Json<ConfigApi>, ApiError> {
     if !CLEWDR_CONFIG.load().admin_auth(&t) {
@@ -17,11 +17,22 @@ pub async fn api_get_config(AuthBearer(t): AuthBearer) -> Result<Json<ConfigApi>
 
 pub async fn api_post_config(
     AuthBearer(t): AuthBearer,
-    Json(c): Json<ConfigApi>,
+    Json(mut c): Json<ConfigApi>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if !CLEWDR_CONFIG.load().admin_auth(&t) {
         return Err(ApiError::unauthorized());
     }
+
+    {
+        let current = CLEWDR_CONFIG.load();
+        if c.password == HASHED_PLACEHOLDER || c.password.is_empty() {
+            c.password = current.password().to_string();
+        }
+        if c.admin_password == HASHED_PLACEHOLDER || c.admin_password.is_empty() {
+            c.admin_password = current.admin_password().to_string();
+        }
+    }
+
     let c: ClewdrConfig = ClewdrConfig::from(c).validate();
     CLEWDR_CONFIG.rcu(|old_c| {
         let mut new_c = ClewdrConfig::clone(&c);
