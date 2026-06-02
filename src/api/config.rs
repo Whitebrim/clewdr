@@ -4,7 +4,10 @@ use clewdr_types::ConfigApi;
 use serde_json::json;
 
 use super::error::ApiError;
-use crate::config::{CLEWDR_CONFIG, ClewdrConfig, HASHED_PLACEHOLDER};
+use crate::{
+    config::{CLEWDR_CONFIG, ClewdrConfig, HASHED_PLACEHOLDER},
+    security::audit,
+};
 
 pub async fn api_get_config(AuthBearer(t): AuthBearer) -> Result<Json<ConfigApi>, ApiError> {
     if !CLEWDR_CONFIG.load().admin_auth(&t) {
@@ -43,6 +46,8 @@ pub async fn api_post_config(
     if let Err(e) = CLEWDR_CONFIG.load().save().await {
         return Err(ApiError::internal(format!("Failed to save config: {}", e)));
     }
+
+    audit("config_save", None, true, None);
 
     Ok(Json(json!({
         "message": "Config updated successfully",

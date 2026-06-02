@@ -21,6 +21,7 @@ use crate::{
     claude_code_state::ClaudeCodeState,
     claude_web_state::ClaudeWebState,
     config::{CLEWDR_CONFIG, CookieStatus},
+    security::audit,
     services::cookie_actor::CookieActorHandle,
 };
 
@@ -72,9 +73,8 @@ pub async fn api_post_cookie(
     match s.submit(c).await {
         Ok(_) => {
             info!("Cookie submitted successfully");
-            // Clear cache to ensure fresh data on next request
+            audit("cookie_add", None, true, None);
             COOKIES_CACHE.invalidate(COOKIE_STATUS_CACHE_KEY);
-            info!("Cookie status cache invalidated after adding new cookie");
             Ok(StatusCode::OK)
         }
         Err(e) => {
@@ -200,9 +200,8 @@ pub async fn api_delete_cookie(
     match s.delete_cookie(c.to_owned()).await {
         Ok(_) => {
             info!("Cookie deleted successfully: {}", c.cookie);
-            // Clear cache to ensure fresh data on next request
+            audit("cookie_delete", None, true, None);
             COOKIES_CACHE.invalidate(COOKIE_STATUS_CACHE_KEY);
-            info!("Cookie status cache invalidated");
             Ok(StatusCode::NO_CONTENT)
         }
         Err(e) => {

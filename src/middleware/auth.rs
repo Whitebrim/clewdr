@@ -8,7 +8,7 @@ use crate::{
     config::CLEWDR_CONFIG,
     error::ClewdrError,
     security::{
-        check_bruteforce, check_ip_allowlist, extract_client_ip, record_auth_failure,
+        audit, check_bruteforce, check_ip_allowlist, extract_client_ip, record_auth_failure,
         record_auth_success,
     },
 };
@@ -54,11 +54,13 @@ where
             .map_err(|_| ClewdrError::InvalidAuth)?;
         if !CLEWDR_CONFIG.load().admin_auth(&key) {
             warn!("Invalid admin key");
+            audit("admin_login", ip, false, None);
             if let Some(ip) = ip {
                 record_auth_failure(ip);
             }
             return Err(ClewdrError::InvalidAuth);
         }
+        audit("admin_login", ip, true, None);
         if let Some(ip) = ip {
             record_auth_success(ip);
         }
