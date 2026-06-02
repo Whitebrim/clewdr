@@ -112,6 +112,10 @@ pub struct ClewdrConfig {
     pub cookie_array: HashSet<CookieStatus>,
     #[serde(default)]
     pub wasted_cookie: HashSet<UselessCookie>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookie_array_enc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasted_cookie_enc: Option<String>,
 
     // Server settings, cannot hot reload
     #[serde(default = "default_ip")]
@@ -194,6 +198,8 @@ impl Default for ClewdrConfig {
             auto_update: false,
             cookie_array: HashSet::new(),
             wasted_cookie: HashSet::new(),
+            cookie_array_enc: None,
+            wasted_cookie_enc: None,
             password: String::new(),
             admin_password: String::new(),
             proxy: None,
@@ -405,6 +411,47 @@ impl ClewdrConfig {
                 error!("Failed to load config: {}", e);
             })
             .unwrap_or_default();
+
+        // Decrypt encrypted cookies
+        let key_path = CONFIG_PATH.with_extension("key");
+        let has_encrypted = config.cookie_array_enc.is_some() || config.wasted_cookie_enc.is_some();
+        if has_encrypted {
+            match crate::security::get_data_key(&key_path, false) {
+                Ok(key) => {
+                    if let Some(ref enc) = config.cookie_array_enc {
+                        match crate::security::decrypt_data(&key, enc) {
+                            Some(plain) => match serde_json::from_slice::<HashSet<CookieStatus>>(
+                                &plain,
+                            ) {
+                                Ok(cookies) => config.cookie_array.extend(cookies),
+                                Err(e) => error!("Failed to deserialize decrypted cookies: {e}"),
+                            },
+                            None => error!("Failed to decrypt cookie_array_enc"),
+                        }
+                    }
+                    if let Some(ref enc) = config.wasted_cookie_enc {
+                        match crate::security::decrypt_data(&key, enc) {
+                            Some(plain) => {
+                                match serde_json::from_slice::<HashSet<UselessCookie>>(&plain) {
+                                    Ok(cookies) => config.wasted_cookie.extend(cookies),
+                                    Err(e) => {
+                                        error!("Failed to deserialize decrypted wasted cookies: {e}")
+                                    }
+                                }
+                            }
+                            None => error!("Failed to decrypt wasted_cookie_enc"),
+                        }
+                    }
+                    config.cookie_array_enc = None;
+                    config.wasted_cookie_enc = None;
+                }
+                Err(msg) => {
+                    eprintln!("FATAL: {msg}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         if let Some(ref f) = Args::try_parse().ok().and_then(|a| a.file) {
             // load cookies from file
             if f.exists() {
@@ -475,8 +522,30 @@ impl ClewdrConfig {
         {
             tokio::fs::create_dir_all(parent).await?;
         }
+
+        let mut save_config = self.clone();
+
+        // Encrypt cookies before saving
+        let key_path = CONFIG_PATH.with_extension("key");
+        if let Ok(key) = crate::security::get_data_key(&key_path, true) {
+            if !save_config.cookie_array.is_empty() {
+                if let Ok(json) = serde_json::to_vec(&save_config.cookie_array) {
+                    save_config.cookie_array_enc =
+                        Some(crate::security::encrypt_data(&key, &json));
+                }
+                save_config.cookie_array = HashSet::new();
+            }
+            if !save_config.wasted_cookie.is_empty() {
+                if let Ok(json) = serde_json::to_vec(&save_config.wasted_cookie) {
+                    save_config.wasted_cookie_enc =
+                        Some(crate::security::encrypt_data(&key, &json));
+                }
+                save_config.wasted_cookie = HashSet::new();
+            }
+        }
+
         let path = CONFIG_PATH.as_path();
-        let data = toml::ser::to_string_pretty(self)?;
+        let data = toml::ser::to_string_pretty(&save_config)?;
         tokio::fs::write(path, data).await?;
         #[cfg(unix)]
         {
