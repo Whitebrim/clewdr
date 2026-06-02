@@ -46,22 +46,34 @@ pub async fn merge_sse(
         .await?)
 }
 
-/// Whether an SSE event from Claude.ai's web `/completion` stream is the
-/// non-standard `message_limit` event (which describes the account's message
-/// quota). It is not part of the Anthropic API, so it must be filtered out
-/// before reaching the client.
-pub(crate) fn is_message_limit_event(event_name: &str, data: &str) -> bool {
+/// Whether an SSE event from Claude.ai's web `/completion` stream must be
+/// withheld from the client because it is a Claude.ai-specific extension that
+/// is not part of the Anthropic API:
+///
+/// * the `message_limit` event (the account's message-quota info), or
+/// * a `content_block_delta` carrying the undocumented
+///   `tool_use_block_update_delta`.
+pub(crate) fn should_drop_web_event(event_name: &str, data: &str) -> bool {
     if event_name.trim() == "message_limit" {
         return true;
     }
-    serde_json::from_str::<serde_json::Value>(data)
-        .ok()
-        .and_then(|v| {
-            v.get("type")
-                .and_then(|t| t.as_str())
-                .map(|s| s == "message_limit")
-        })
-        .unwrap_or(false)
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+        return false;
+    };
+    // `message_limit` event identified by its data `type`.
+    if v.get("type").and_then(|t| t.as_str()) == Some("message_limit") {
+        return true;
+    }
+    // `content_block_delta` whose inner delta is the undocumented
+    // `tool_use_block_update_delta`.
+    if v.get("delta")
+        .and_then(|d| d.get("type"))
+        .and_then(|t| t.as_str())
+        == Some("tool_use_block_update_delta")
+    {
+        return true;
+    }
+    false
 }
 
 impl<S> From<S> for Message
@@ -123,9 +135,10 @@ impl ClaudeWebState {
                 struct Data { completion: String }
                 futures::pin_mut!(stream);
                 while let Some(event) = stream.try_next().await? {
-                    // Claude.ai emits a non-standard `message_limit` event; never
-                    // forward it to the client.
-                    if is_message_limit_event(&event.event, &event.data) {
+                    // Claude.ai emits non-standard events (`message_limit`, and
+                    // `content_block_delta`s with `tool_use_block_update_delta`);
+                    // never forward those to the client.
+                    if should_drop_web_event(&event.event, &event.data) {
                         continue;
                     }
                     if let Ok(d) = serde_json::from_str::<Data>(&event.data) {
@@ -320,37 +333,55 @@ async fn count_code_output_tokens_for_text(
 
 #[cfg(test)]
 mod tests {
-    use super::is_message_limit_event;
+    use super::should_drop_web_event;
 
     #[test]
-    fn detects_message_limit_by_event_name() {
-        assert!(is_message_limit_event(
+    fn drops_message_limit_by_event_name() {
+        assert!(should_drop_web_event(
             "message_limit",
             r#"{"type":"message_limit","message_limit":{"type":"within_limit"}}"#
         ));
     }
 
     #[test]
-    fn detects_message_limit_by_data_type() {
+    fn drops_message_limit_by_data_type() {
         // event name absent/empty, only the data carries the type
-        assert!(is_message_limit_event(
+        assert!(should_drop_web_event(
             "",
             r#"{"type":"message_limit","message_limit":{"type":"approaching_limit"}}"#
         ));
     }
 
     #[test]
+    fn drops_tool_use_block_update_delta() {
+        assert!(should_drop_web_event(
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"tool_use_block_update_delta","id":"toolu_1"}}"#
+        ));
+        // even if the SSE event name is absent
+        assert!(should_drop_web_event(
+            "",
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"tool_use_block_update_delta"}}"#
+        ));
+    }
+
+    #[test]
     fn passes_through_standard_events() {
-        assert!(!is_message_limit_event(
+        // standard text/tool deltas must survive
+        assert!(!should_drop_web_event(
             "content_block_delta",
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#
         ));
-        assert!(!is_message_limit_event(
+        assert!(!should_drop_web_event(
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#
+        ));
+        assert!(!should_drop_web_event(
             "message_stop",
             r#"{"type":"message_stop"}"#
         ));
-        assert!(!is_message_limit_event("completion", r#"{"completion":"hello"}"#));
+        assert!(!should_drop_web_event("completion", r#"{"completion":"hello"}"#));
         // non-JSON data must not be misclassified
-        assert!(!is_message_limit_event("ping", "not json"));
+        assert!(!should_drop_web_event("ping", "not json"));
     }
 }
