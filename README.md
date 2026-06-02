@@ -96,6 +96,32 @@ Cursor:
 }
 ```
 
+## Security / Public Deployment
+
+ClewdR includes production-grade security features for public-facing deployments:
+
+- **Password hashing**: argon2id (OWASP 2024 params) with auto-migration from plaintext
+- **Cookie encryption**: ChaCha20-Poly1305 AEAD at rest, keyed via `CLEWDR_DATA_KEY` env var
+- **Brute-force protection**: progressive lockout (5 fails → 5 min, escalating to permanent)
+- **IP allowlist**: CIDR-based access control for admin and API endpoints
+- **Security headers**: CSP, HSTS, X-Frame-Options, and more
+- **Audit log**: JSON Lines log of all admin actions
+- **Error sanitization**: no stack traces in responses, correlation IDs for debugging
+
+For deployment behind a TLS reverse proxy (nginx/Caddy), see [SECURITY.md](./SECURITY.md).
+
+Quick start for public deployment:
+```bash
+# Generate encryption key
+export CLEWDR_DATA_KEY=$(openssl rand -hex 32)
+
+# Run (passwords auto-generated on first start)
+./clewdr
+
+# Restrict admin access in clewdr.toml
+# admin_ip_allowlist = ["your.ip.here/32"]
+```
+
 ## Resources
 
 - Wiki: <https://github.com/Xerxes-2/clewdr/wiki>  
