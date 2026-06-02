@@ -164,9 +164,9 @@ impl RouterBuilder {
         self
     }
 
-    /// Model-list endpoints, split by dialect:
-    /// * `/openai/v1/models` — OpenAI list shape
-    /// * `/anthropic/v1/models` — Anthropic list shape
+    /// Model-list endpoints, split by dialect and namespace:
+    /// * `/openai/v1/models`, `/openai/code/v1/models` — OpenAI list shape
+    /// * `/anthropic/v1/models`, `/anthropic/code/v1/models` — Anthropic shape
     ///
     /// `/v1/models` and `/code/v1/models` are kept as deprecated pre-0.12.29
     /// aliases that serve the OpenAI shape (their historical behaviour).
@@ -175,7 +175,9 @@ impl RouterBuilder {
     fn route_models_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/openai/v1/models", get(api_get_models_openai))
+            .route("/openai/code/v1/models", get(api_get_models_openai))
             .route("/anthropic/v1/models", get(api_get_models_anthropic))
+            .route("/anthropic/code/v1/models", get(api_get_models_anthropic))
             // legacy aliases (OpenAI shape, matching pre-0.12.29 behaviour)
             .route("/v1/models", get(api_get_models_openai))
             .route("/code/v1/models", get(api_get_models_openai))
