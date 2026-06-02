@@ -45,6 +45,12 @@ fn is_argon2_hash(s: &str) -> bool {
     s.starts_with("$argon2")
 }
 
+/// Whether `validate()` will rewrite this password field (empty -> generated,
+/// or plaintext -> hashed), meaning the change must be persisted once.
+fn password_needs_persist(s: &str) -> bool {
+    s.trim().is_empty() || !is_argon2_hash(s)
+}
+
 fn hash_password_argon2(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     let params = Params::new(65536, 3, 4, None).expect("valid argon2 params");
@@ -155,6 +161,32 @@ pub fn default_models() -> Vec<String> {
     .collect()
 }
 
+/// Current on-disk config schema version. Bumped when a breaking layout change
+/// needs migration logic in [`ClewdrConfig::new`].
+pub fn default_config_version() -> u32 {
+    1
+}
+
+/// Networks whose `X-Forwarded-For` / `X-Real-IP` headers are trusted when
+/// determining the real client IP. Defaults to loopback plus the RFC1918 /
+/// ULA private ranges, which covers the usual "nginx in front on the same
+/// host / in the same Docker network" deployment. A request whose TCP peer is
+/// outside these ranges is treated as a direct (untrusted) connection and its
+/// forwarding headers are ignored — see [`crate::security::extract_client_ip`].
+pub fn default_trusted_proxies() -> Vec<IpNet> {
+    [
+        "127.0.0.0/8",
+        "::1/128",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+    ]
+    .iter()
+    .map(|s| s.parse().expect("valid default CIDR"))
+    .collect()
+}
+
 /// A struct representing the configuration of the application
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClewdrConfig {
@@ -241,10 +273,17 @@ pub struct ClewdrConfig {
     pub admin_ip_allowlist: Vec<IpNet>,
     #[serde(default)]
     pub api_ip_allowlist: Vec<IpNet>,
+    /// Reverse proxies whose forwarding headers are trusted (see Bug C).
+    #[serde(default = "default_trusted_proxies")]
+    pub trusted_proxies: Vec<IpNet>,
 
     // Models advertised by the model-list endpoints, can hot reload
     #[serde(default = "default_models")]
     pub models: Vec<String>,
+
+    // On-disk schema version, used for future config migrations
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
 
     // Skip field, can hot reload
     #[serde(skip)]
@@ -288,7 +327,9 @@ impl Default for ClewdrConfig {
             log_to_file: false,
             admin_ip_allowlist: Vec::new(),
             api_ip_allowlist: Vec::new(),
+            trusted_proxies: default_trusted_proxies(),
             models: default_models(),
+            config_version: default_config_version(),
         }
     }
 }
@@ -298,12 +339,6 @@ impl Display for ClewdrConfig {
         // one line per field
         let authority = self.address();
         let authority: Authority = authority.to_string().parse().map_err(|_| std::fmt::Error)?;
-        let api_url = Uri::builder()
-            .scheme(Scheme::HTTP)
-            .authority(authority.to_owned())
-            .path_and_query("/v1")
-            .build()
-            .map_err(|_| std::fmt::Error)?;
         let web_url = Uri::builder()
             .scheme(Scheme::HTTP)
             .authority(authority.to_string())
@@ -320,15 +355,18 @@ impl Display for ClewdrConfig {
         } else {
             self.admin_password.as_str().yellow()
         };
+        let base = web_url.to_string();
         write!(
             f,
-            "Claude(Claude and OpenAI format) Endpoint: {}\n\
-            Claude Code(Claude and OpenAI format) Endpoint: {}\n\
+            "Anthropic-native Endpoint:  {}  (Claude Code: {})\n\
+            OpenAI-compatible Endpoint: {}  (Claude Code: {})\n\
             API Password: {}\n\
             Web Admin Endpoint: {}\n\
             Web Admin Password: {}\n",
-            api_url.to_string().green().underline(),
-            (web_url.to_string() + "code/v1").green().underline(),
+            (base.clone() + "anthropic/v1").green().underline(),
+            (base.clone() + "anthropic/code/v1").green().underline(),
+            (base.clone() + "openai/v1").green().underline(),
+            (base.clone() + "openai/code/v1").green().underline(),
             pw_display,
             web_url.to_string().green().underline(),
             apw_display,
@@ -468,29 +506,61 @@ impl ClewdrConfig {
     pub fn new() -> Self {
         // Load config from TOML then override with environment variables.
         // Use double underscore "__" to map nested keys.
-        let mut config: ClewdrConfig = Figment::from(Toml::file(CONFIG_PATH.as_path()))
+        let config_existed = CONFIG_PATH.exists();
+        let mut config: ClewdrConfig = match Figment::from(Toml::file(CONFIG_PATH.as_path()))
             .admerge(Env::prefixed("CLEWDR_").split("__"))
             .extract_lossy()
-            .inspect_err(|e| {
-                error!("Failed to load config: {}", e);
-            })
-            .unwrap_or_default();
+        {
+            Ok(c) => c,
+            Err(e) => {
+                if config_existed {
+                    // The file is there but won't parse. Overwriting it with
+                    // defaults would destroy passwords, allowlists and encrypted
+                    // cookies (Bug A/E), so refuse to start instead.
+                    eprintln!(
+                        "FATAL: failed to parse config at {}: {e}",
+                        CONFIG_PATH.display()
+                    );
+                    eprintln!(
+                        "Refusing to start so the existing config is not overwritten. \
+                         Fix the file or move it aside, then restart."
+                    );
+                    std::process::exit(1);
+                }
+                error!("Failed to load config: {e}");
+                ClewdrConfig::default()
+            }
+        };
 
-        // Decrypt encrypted cookies
+        // Decrypt encrypted cookies. The encrypted blobs are only cleared from
+        // the in-memory config when decryption fully succeeds; on failure they
+        // are kept and `decrypt_failed` is set so we never persist over them.
+        let mut decrypt_failed = false;
         let key_path = CONFIG_PATH.with_extension("key");
         let has_encrypted = config.cookie_array_enc.is_some() || config.wasted_cookie_enc.is_some();
         if has_encrypted {
             match crate::security::get_data_key(&key_path, false) {
                 Ok(key) => {
+                    let mut ok = true;
                     if let Some(ref enc) = config.cookie_array_enc {
                         match crate::security::decrypt_data(&key, enc) {
                             Some(plain) => match serde_json::from_slice::<HashSet<CookieStatus>>(
                                 &plain,
                             ) {
                                 Ok(cookies) => config.cookie_array.extend(cookies),
-                                Err(e) => error!("Failed to deserialize decrypted cookies: {e}"),
+                                Err(e) => {
+                                    error!("Failed to deserialize decrypted cookies: {e}");
+                                    ok = false;
+                                }
                             },
-                            None => error!("Failed to decrypt cookie_array_enc"),
+                            None => {
+                                error!(
+                                    "Failed to decrypt cookie_array_enc — wrong clewdr.key or \
+                                     corrupted data. Encrypted cookies left intact on disk; \
+                                     manual re-import may be required."
+                                );
+                                ok = false;
+                            }
                         }
                     }
                     if let Some(ref enc) = config.wasted_cookie_enc {
@@ -499,15 +569,23 @@ impl ClewdrConfig {
                                 match serde_json::from_slice::<HashSet<UselessCookie>>(&plain) {
                                     Ok(cookies) => config.wasted_cookie.extend(cookies),
                                     Err(e) => {
-                                        error!("Failed to deserialize decrypted wasted cookies: {e}")
+                                        error!("Failed to deserialize decrypted wasted cookies: {e}");
+                                        ok = false;
                                     }
                                 }
                             }
-                            None => error!("Failed to decrypt wasted_cookie_enc"),
+                            None => {
+                                error!("Failed to decrypt wasted_cookie_enc — left intact on disk.");
+                                ok = false;
+                            }
                         }
                     }
-                    config.cookie_array_enc = None;
-                    config.wasted_cookie_enc = None;
+                    if ok {
+                        config.cookie_array_enc = None;
+                        config.wasted_cookie_enc = None;
+                    } else {
+                        decrypt_failed = true;
+                    }
                 }
                 Err(msg) => {
                     eprintln!("FATAL: {msg}");
@@ -516,6 +594,7 @@ impl ClewdrConfig {
             }
         }
 
+        let mut cookie_file_loaded = false;
         if let Some(ref f) = Args::try_parse().ok().and_then(|a| a.file) {
             // load cookies from file
             if f.exists() {
@@ -524,6 +603,7 @@ impl ClewdrConfig {
                         .lines()
                         .filter_map(|line| CookieStatus::new(line, None).ok());
                     config.cookie_array.extend(cookies);
+                    cookie_file_loaded = true;
                 } else {
                     error!("Failed to read cookie file: {}", f.display());
                 }
@@ -531,8 +611,23 @@ impl ClewdrConfig {
                 error!("Cookie file not found: {}", f.display());
             }
         }
+
+        // `validate()` rewrites the password fields when they are empty (first
+        // run) or still plaintext (migration); both need to be persisted once.
+        let password_needs_persist =
+            password_needs_persist(&config.password) || password_needs_persist(&config.admin_password);
+
         let config = config.validate();
-        if !config.no_fs {
+
+        // Only write the config back to disk when there is an actual reason to:
+        // a fresh first run, a password that was just generated/migrated, or
+        // cookies imported from a file. A clean restart of an already-persisted
+        // config no longer rewrites the file (Bug A), and a failed cookie
+        // decrypt never triggers a save that would wipe the blob (Bug E).
+        let should_save = !config.no_fs
+            && !decrypt_failed
+            && (!config_existed || password_needs_persist || cookie_file_loaded);
+        if should_save {
             let config_clone = config.to_owned();
             spawn(async move {
                 config_clone.save().await.unwrap_or_else(|e| {

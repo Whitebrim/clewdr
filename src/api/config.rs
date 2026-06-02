@@ -41,9 +41,15 @@ pub async fn api_post_config(
         let mut new_c = ClewdrConfig::clone(&c);
         new_c.cookie_array = old_c.cookie_array.to_owned();
         new_c.wasted_cookie = old_c.wasted_cookie.to_owned();
-        // Model list is managed via clewdr.toml, not the admin UI; preserve it
-        // across saves instead of resetting to the default list.
+        // These fields are managed via clewdr.toml rather than the admin UI
+        // (they are not part of ConfigApi). Preserve them across saves instead
+        // of letting `From<ConfigApi>` reset them to defaults — otherwise a UI
+        // config save would silently wipe the IP allowlists and model list.
         new_c.models = old_c.models.to_owned();
+        new_c.admin_ip_allowlist = old_c.admin_ip_allowlist.to_owned();
+        new_c.api_ip_allowlist = old_c.api_ip_allowlist.to_owned();
+        new_c.trusted_proxies = old_c.trusted_proxies.to_owned();
+        new_c.config_version = old_c.config_version;
         new_c
     });
     if let Err(e) = CLEWDR_CONFIG.load().save().await {
