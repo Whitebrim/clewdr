@@ -56,16 +56,17 @@ impl RouterBuilder {
             .route_admin_endpoints()
             .route_claude_web_oai_endpoints()
             .route_claude_code_oai_endpoints()
+            .route_models_endpoints()
             .setup_static_serving()
             .with_tower_trace()
             .with_security_headers()
             .with_cors()
     }
 
-    /// Sets up routes for v1 endpoints
+    /// Anthropic-native message endpoint for Claude web (`/anthropic/v1/messages`)
     fn route_claude_web_endpoints(mut self) -> Self {
         let router = Router::new()
-            .route("/v1/messages", post(api_claude_web))
+            .route("/anthropic/v1/messages", post(api_claude_web))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -79,12 +80,12 @@ impl RouterBuilder {
         self
     }
 
-    /// Sets up routes for v1 endpoints
+    /// Anthropic-native message endpoints for Claude Code (`/anthropic/code/v1/*`)
     fn route_claude_code_endpoints(mut self) -> Self {
         let router = Router::new()
-            .route("/code/v1/messages", post(api_claude_code))
+            .route("/anthropic/code/v1/messages", post(api_claude_code))
             .route(
-                "/code/v1/messages/count_tokens",
+                "/anthropic/code/v1/messages/count_tokens",
                 post(api_claude_code_count_tokens),
             )
             .layer(
@@ -118,11 +119,10 @@ impl RouterBuilder {
         self
     }
 
-    /// Sets up routes for OpenAI compatible endpoints
+    /// OpenAI-compatible chat endpoint for Claude web (`/openai/v1/chat/completions`)
     fn route_claude_web_oai_endpoints(mut self) -> Self {
         let router = Router::new()
-            .route("/v1/chat/completions", post(api_claude_web))
-            .route("/v1/models", get(api_get_models))
+            .route("/openai/v1/chat/completions", post(api_claude_web))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -136,11 +136,10 @@ impl RouterBuilder {
         self
     }
 
-    /// Sets up routes for OpenAI compatible endpoints
+    /// OpenAI-compatible chat endpoint for Claude Code (`/openai/code/v1/chat/completions`)
     fn route_claude_code_oai_endpoints(mut self) -> Self {
         let router = Router::new()
-            .route("/code/v1/chat/completions", post(api_claude_code))
-            .route("/code/v1/models", get(api_get_models))
+            .route("/openai/code/v1/chat/completions", post(api_claude_code))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -148,6 +147,24 @@ impl RouterBuilder {
                     .layer(map_response(to_oai)),
             )
             .with_state(self.claude_providers.code());
+        self.inner = self.inner.merge(router);
+        self
+    }
+
+    /// Model-list endpoints, split by dialect:
+    /// * `/openai/v1/models` — OpenAI list shape
+    /// * `/anthropic/v1/models` — Anthropic list shape
+    ///
+    /// Flexible auth so both `x-api-key` and `Authorization: Bearer` work.
+    fn route_models_endpoints(mut self) -> Self {
+        let router = Router::new()
+            .route("/openai/v1/models", get(api_get_models_openai))
+            .route("/anthropic/v1/models", get(api_get_models_anthropic))
+            .layer(
+                ServiceBuilder::new()
+                    .layer(from_extractor::<RequireFlexibleAuth>())
+                    .layer(CompressionLayer::new()),
+            );
         self.inner = self.inner.merge(router);
         self
     }

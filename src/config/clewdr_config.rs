@@ -106,6 +106,55 @@ fn generate_password() -> String {
     pg.generate_one().unwrap()
 }
 
+/// Default list of model identifiers advertised by `/openai/v1/models` and
+/// `/anthropic/v1/models`.
+///
+/// Besides the real Anthropic model ids this includes ClewdR's synthetic
+/// `-thinking` and `-1M` variants, which the request layer interprets to
+/// toggle extended thinking and the 1M-token context window respectively.
+/// The list lives in `clewdr.toml` (`models = [...]`) and can be edited freely.
+pub fn default_models() -> Vec<String> {
+    [
+        "claude-opus-4-8",
+        "claude-opus-4-8-thinking",
+        "claude-opus-4-8-1M",
+        "claude-opus-4-8-1M-thinking",
+        "claude-opus-4-7",
+        "claude-opus-4-7-thinking",
+        "claude-opus-4-7-1M",
+        "claude-opus-4-7-1M-thinking",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-6-thinking",
+        "claude-sonnet-4-6-1M",
+        "claude-sonnet-4-6-1M-thinking",
+        "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5-20251001-thinking",
+        "claude-opus-4-6",
+        "claude-opus-4-6-thinking",
+        "claude-opus-4-6-1M",
+        "claude-opus-4-6-1M-thinking",
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-5-20251101-thinking",
+        "claude-opus-4-5",
+        "claude-opus-4-5-thinking",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-5-20250929-thinking",
+        "claude-sonnet-4-5-20250929-1M",
+        "claude-sonnet-4-5-20250929-1M-thinking",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-1-20250805-thinking",
+        "claude-sonnet-4-20250514",
+        "claude-sonnet-4-20250514-thinking",
+        "claude-sonnet-4-20250514-1M",
+        "claude-sonnet-4-20250514-1M-thinking",
+        "claude-opus-4-20250514",
+        "claude-opus-4-20250514-thinking",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// A struct representing the configuration of the application
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClewdrConfig {
@@ -193,6 +242,10 @@ pub struct ClewdrConfig {
     #[serde(default)]
     pub api_ip_allowlist: Vec<IpNet>,
 
+    // Models advertised by the model-list endpoints, can hot reload
+    #[serde(default = "default_models")]
+    pub models: Vec<String>,
+
     // Skip field, can hot reload
     #[serde(skip)]
     pub wreq_proxy: Option<Proxy>,
@@ -235,6 +288,7 @@ impl Default for ClewdrConfig {
             log_to_file: false,
             admin_ip_allowlist: Vec::new(),
             api_ip_allowlist: Vec::new(),
+            models: default_models(),
         }
     }
 }
