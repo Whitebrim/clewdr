@@ -6,22 +6,21 @@
 
 API endpoints are now split by dialect: **Anthropic-native** under `/anthropic/*`
 and **OpenAI-compatible** under `/openai/*`. The pre-0.12.29 `/v1/*` and
-`/code/v1/*` paths still work as **deprecated aliases** and will be removed in a
-future release — migrate clients when convenient.
+`/code/v1/*` paths have been **removed** — update clients to the new paths.
 
-| Old (deprecated alias) | New (canonical) |
-|------------------------|-----------------|
+| Old (removed) | New |
+|---------------|-----|
 | `/v1/messages` | `/anthropic/v1/messages` |
 | `/v1/chat/completions` | `/openai/v1/chat/completions` |
 | `/v1/models` | `/openai/v1/models` (OpenAI shape) · `/anthropic/v1/models` (Anthropic shape) |
 | `/code/v1/messages` | `/anthropic/code/v1/messages` |
 | `/code/v1/messages/count_tokens` | `/anthropic/code/v1/messages/count_tokens` |
 | `/code/v1/chat/completions` | `/openai/code/v1/chat/completions` |
-| `/code/v1/models` | `/openai/v1/models` |
+| `/code/v1/models` | `/openai/code/v1/models` (OpenAI shape) · `/anthropic/code/v1/models` (Anthropic shape) |
 
 All endpoints accept either `Authorization: Bearer <password>` or
 `x-api-key: <password>`. Update Cursor / Continue / Cline / SillyTavern base
-URLs to `/openai/v1` (legacy `/v1` keeps working for now).
+URLs to `/openai/v1`.
 
 ### New security features
 

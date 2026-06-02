@@ -64,11 +64,9 @@ impl RouterBuilder {
     }
 
     /// Anthropic-native message endpoint for Claude web (`/anthropic/v1/messages`).
-    /// `/v1/messages` is kept as a deprecated pre-0.12.29 alias.
     fn route_claude_web_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/anthropic/v1/messages", post(api_claude_web))
-            .route("/v1/messages", post(api_claude_web)) // legacy alias
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -83,18 +81,11 @@ impl RouterBuilder {
     }
 
     /// Anthropic-native message endpoints for Claude Code (`/anthropic/code/v1/*`).
-    /// `/code/v1/*` is kept as a deprecated pre-0.12.29 alias.
     fn route_claude_code_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/anthropic/code/v1/messages", post(api_claude_code))
             .route(
                 "/anthropic/code/v1/messages/count_tokens",
-                post(api_claude_code_count_tokens),
-            )
-            // legacy aliases
-            .route("/code/v1/messages", post(api_claude_code))
-            .route(
-                "/code/v1/messages/count_tokens",
                 post(api_claude_code_count_tokens),
             )
             .layer(
@@ -129,11 +120,9 @@ impl RouterBuilder {
     }
 
     /// OpenAI-compatible chat endpoint for Claude web (`/openai/v1/chat/completions`).
-    /// `/v1/chat/completions` is kept as a deprecated pre-0.12.29 alias.
     fn route_claude_web_oai_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/openai/v1/chat/completions", post(api_claude_web))
-            .route("/v1/chat/completions", post(api_claude_web)) // legacy alias
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -148,11 +137,9 @@ impl RouterBuilder {
     }
 
     /// OpenAI-compatible chat endpoint for Claude Code (`/openai/code/v1/chat/completions`).
-    /// `/code/v1/chat/completions` is kept as a deprecated pre-0.12.29 alias.
     fn route_claude_code_oai_endpoints(mut self) -> Self {
         let router = Router::new()
             .route("/openai/code/v1/chat/completions", post(api_claude_code))
-            .route("/code/v1/chat/completions", post(api_claude_code)) // legacy alias
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
@@ -168,9 +155,6 @@ impl RouterBuilder {
     /// * `/openai/v1/models`, `/openai/code/v1/models` — OpenAI list shape
     /// * `/anthropic/v1/models`, `/anthropic/code/v1/models` — Anthropic shape
     ///
-    /// `/v1/models` and `/code/v1/models` are kept as deprecated pre-0.12.29
-    /// aliases that serve the OpenAI shape (their historical behaviour).
-    ///
     /// Flexible auth so both `x-api-key` and `Authorization: Bearer` work.
     fn route_models_endpoints(mut self) -> Self {
         let router = Router::new()
@@ -178,9 +162,6 @@ impl RouterBuilder {
             .route("/openai/code/v1/models", get(api_get_models_openai))
             .route("/anthropic/v1/models", get(api_get_models_anthropic))
             .route("/anthropic/code/v1/models", get(api_get_models_anthropic))
-            // legacy aliases (OpenAI shape, matching pre-0.12.29 behaviour)
-            .route("/v1/models", get(api_get_models_openai))
-            .route("/code/v1/models", get(api_get_models_openai))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_extractor::<RequireFlexibleAuth>())
