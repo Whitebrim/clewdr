@@ -16,7 +16,7 @@ use tower_http::{
 use crate::{
     api::*,
     middleware::{
-        RequireAdminAuth, RequireBearerAuth, RequireFlexibleAuth,
+        RequireAdminAuth, RequireFlexibleAuth,
         claude::{add_usage_info, apply_stop_sequences, check_overloaded, to_oai},
     },
     providers::claude::ClaudeProviders,
@@ -125,7 +125,7 @@ impl RouterBuilder {
             .route("/v1/models", get(api_get_models))
             .layer(
                 ServiceBuilder::new()
-                    .layer(from_extractor::<RequireBearerAuth>())
+                    .layer(from_extractor::<RequireFlexibleAuth>())
                     .layer(CompressionLayer::new())
                     .layer(map_response(to_oai))
                     .layer(map_response(apply_stop_sequences))
@@ -143,7 +143,7 @@ impl RouterBuilder {
             .route("/code/v1/models", get(api_get_models))
             .layer(
                 ServiceBuilder::new()
-                    .layer(from_extractor::<RequireBearerAuth>())
+                    .layer(from_extractor::<RequireFlexibleAuth>())
                     .layer(CompressionLayer::new())
                     .layer(map_response(to_oai)),
             )
